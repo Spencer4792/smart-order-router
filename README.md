@@ -1,125 +1,117 @@
-# Smart Order Router (SOR) Optimizer
+# Smart Order Router
 
-A quantitative finance application that applies Traveling Salesman Problem (TSP) optimization algorithms to smart order routing, minimizing execution costs when routing large trades across multiple trading venues.
+A quantitative finance application that applies **Traveling Salesman Problem (TSP)** optimization algorithms to smart order routing, minimizing execution costs when routing large trades across multiple stock exchanges.
 
-## Overview
+**[Live Demo](https://hales-sor.vercel.app)** | **[API Documentation](https://web-production-2a270.up.railway.app/docs)**
 
-When executing large orders, institutional traders face the challenge of splitting orders across multiple exchanges and dark pools to minimize total execution cost. This cost includes:
+---
 
-- **Explicit costs**: Exchange fees, bid-ask spread
-- **Implicit costs**: Market impact, latency slippage, information leakage
+## The Problem
 
-This project models the order routing problem as a variant of the Traveling Salesman Problem, where:
-- **Nodes** represent trading venues (NYSE, NASDAQ, IEX, CBOE, dark pools)
-- **Edge weights** represent composite execution costs between venue routing decisions
-- **Objective** is to find the optimal routing sequence and allocation that minimizes total execution cost
+When institutional traders need to execute large orders (e.g., 10,000 shares of AAPL), sending the entire order to a single exchange is expensive due to:
 
-## Algorithms Implemented
+- **Market Impact**: Large orders move prices against you
+- **Fee Structures**: Different exchanges have different maker/taker fees
+- **Information Leakage**: Early executions reveal your intent to the market
+- **Latency**: Execution timing affects final cost
 
-### Exact Algorithms
+The solution is to split the order across multiple venues in an optimal sequence—but finding that optimal sequence is computationally hard.
 
-| Algorithm | Time Complexity | Space Complexity | Description |
-|-----------|----------------|------------------|-------------|
-| Brute Force | O(n!) | O(n) | Exhaustive search, optimal for n ≤ 10 venues |
-| Held-Karp (DP + Bitmask) | O(n²·2ⁿ) | O(n·2ⁿ) | Dynamic programming approach, optimal for n ≤ 20 |
+## The TSP Connection
 
-### Heuristic Algorithms
+This problem maps elegantly to the **Traveling Salesman Problem**:
 
-| Algorithm | Time Complexity | Space Complexity | Description |
-|-----------|----------------|------------------|-------------|
-| Nearest Neighbor | O(n²) | O(n) | Greedy approach, fast baseline |
-| 2-Opt Local Search | O(n²) per iteration | O(n) | Iterative improvement |
-| Simulated Annealing | O(iterations · n) | O(n) | Metaheuristic, escapes local optima |
-| Genetic Algorithm | O(generations · pop · n) | O(pop · n) | Evolutionary optimization |
+| TSP (Classic) | Order Routing |
+|---------------|---------------|
+| Cities to visit | Trading venues (NYSE, NASDAQ, IEX, etc.) |
+| Distance between cities | Execution cost between venues |
+| Find shortest route | Find lowest-cost execution path |
+| Visit each city once | Allocate order across venues |
+
+The "cost" between venues isn't physical distance—it's a composite of fees, spread, market impact, and latency that changes based on execution sequence.
+
+## Features
+
+### Routing Optimization
+- **6 TSP Algorithms**: Compare exact solutions (Brute Force, Held-Karp) with heuristics (Nearest Neighbor, 2-Opt, Simulated Annealing, Genetic Algorithm)
+- **Smart Allocation**: Liquidity-aware allocation that considers venue characteristics, not just equal splits
+- **Real-time Market Data**: Integration with Alpaca Markets API for live quotes
+
+### Execution Strategies
+- **VWAP**: Volume Weighted Average Price - execute proportional to market volume
+- **TWAP**: Time Weighted Average Price - spread evenly across time
+- **Implementation Shortfall**: Front-loaded execution to minimize price drift risk
+- **Aggressive/Passive**: Configurable execution urgency
+
+### Transaction Cost Analysis (TCA)
+- **Implementation Shortfall**: Total cost vs. decision price
+- **Benchmark Comparison**: Performance vs. VWAP, TWAP, arrival price
+- **Cost Attribution**: Break down costs into spread, impact, timing, and fees
+- **Venue Performance**: Per-venue execution analysis
+
+## Algorithms
+
+| Algorithm | Time Complexity | Space Complexity | Type | Best For |
+|-----------|----------------|------------------|------|----------|
+| Brute Force | O(n!) | O(n) | Exact | n <= 10 venues |
+| Held-Karp | O(n^2 * 2^n) | O(n * 2^n) | Exact | n <= 20 venues |
+| Nearest Neighbor | O(n^2) | O(n) | Greedy | Quick baseline |
+| 2-Opt | O(n^2 * k) | O(n) | Local Search | Improving solutions |
+| Simulated Annealing | O(iterations * n) | O(n) | Metaheuristic | Balanced quality/speed |
+| Genetic Algorithm | O(gen * pop * n) | O(pop * n) | Evolutionary | Large search spaces |
 
 ## Cost Model
 
-The execution cost model incorporates:
+Total execution cost is calculated as:
 
 ```
-Total Cost = Σ (Fee_i + Spread_i + Impact_i + Latency_i) × Allocation_i
+Total Cost = Fees + Spread + Market Impact + Latency Cost
 ```
 
-Where:
-- **Fee_i**: Maker/taker fees at venue i
-- **Spread_i**: Half the bid-ask spread (crossing cost)
-- **Impact_i**: Market impact estimated via square-root model: σ × √(V/ADV)
-- **Latency_i**: Price drift during execution based on venue latency
-
-## Project Structure
+Where market impact uses the square-root model:
 
 ```
-smart-order-router/
-├── backend/
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py                 # FastAPI application
-│   │   ├── config.py               # Configuration management
-│   │   ├── models/
-│   │   │   ├── __init__.py
-│   │   │   ├── order.py            # Order and venue models
-│   │   │   └── cost.py             # Cost model definitions
-│   │   ├── algorithms/
-│   │   │   ├── __init__.py
-│   │   │   ├── base.py             # Abstract base class
-│   │   │   ├── brute_force.py      # Exact: O(n!)
-│   │   │   ├── held_karp.py        # Exact: O(n²·2ⁿ)
-│   │   │   ├── nearest_neighbor.py # Heuristic: O(n²)
-│   │   │   ├── two_opt.py          # Local search: O(n²)
-│   │   │   ├── simulated_annealing.py
-│   │   │   └── genetic.py          # Evolutionary
-│   │   ├── services/
-│   │   │   ├── __init__.py
-│   │   │   ├── market_data.py      # Alpaca API integration
-│   │   │   ├── cost_calculator.py  # Execution cost engine
-│   │   │   └── router.py           # Order routing logic
-│   │   └── api/
-│   │       ├── __init__.py
-│   │       └── routes.py           # API endpoints
-│   ├── tests/
-│   │   ├── __init__.py
-│   │   ├── test_algorithms.py
-│   │   └── test_cost_model.py
-│   └── requirements.txt
-├── frontend/
-│   ├── public/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── hooks/
-│   │   ├── services/
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   ├── package.json
-│   └── vite.config.js
-├── docker-compose.yml
-├── Dockerfile.backend
-├── Dockerfile.frontend
-├── .env.example
-├── .gitignore
-└── README.md
+Impact = volatility * eta * sqrt(quantity / ADV) * urgency_multiplier
 ```
 
-## Quick Start
+## Tech Stack
+
+**Backend**: Python 3.11, FastAPI, Pydantic, NumPy, Alpaca Markets API
+
+**Frontend**: React 18, Vite, Tailwind CSS, Recharts
+
+**Deployment**: Railway (Backend), Vercel (Frontend)
+
+## Trading Venues
+
+The router optimizes across these simulated venues:
+
+| Venue | Type | Maker Fee | Taker Fee | Latency |
+|-------|------|-----------|-----------|---------|
+| NYSE | Exchange | -0.10 bps | 0.30 bps | 0.5 ms |
+| NASDAQ | Exchange | -0.20 bps | 0.30 bps | 0.3 ms |
+| IEX | Exchange | 0.00 bps | 0.09 bps | 1.0 ms |
+| CBOE BZX | Exchange | -0.30 bps | 0.30 bps | 0.4 ms |
+| CBOE EDGX | Exchange | -0.20 bps | 0.29 bps | 0.4 ms |
+| MEMX | Exchange | -0.20 bps | 0.25 bps | 0.2 ms |
+| NYSE Arca | Exchange | -0.15 bps | 0.30 bps | 0.4 ms |
+
+Dark pools available with configurable fill rates.
+
+## Local Development
 
 ### Prerequisites
-
 - Python 3.11+
 - Node.js 18+
-- Alpaca Markets API key (free at https://alpaca.markets)
+- Alpaca API keys (optional - falls back to simulated data)
 
 ### Backend Setup
 
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Set environment variables
-export ALPACA_API_KEY="your_api_key"
-export ALPACA_SECRET_KEY="your_secret_key"
-
-# Run the server
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -131,179 +123,77 @@ npm install
 npm run dev
 ```
 
-### Docker Deployment
+### Environment Variables
 
-```bash
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your Alpaca credentials
+Create `backend/.env`:
 
-# Build and run
-docker-compose up --build
+```
+ALPACA_API_KEY=your_key_here
+ALPACA_SECRET_KEY=your_secret_here
 ```
 
-## API Documentation
-
-Once running, access the interactive API documentation at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-### Key Endpoints
+## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/route` | Calculate optimal order routing |
-| GET | `/api/v1/venues` | List available trading venues |
-| GET | `/api/v1/quote/{symbol}` | Get real-time quote data |
-| POST | `/api/v1/benchmark` | Run algorithm comparison |
+| GET | `/api/v1/quote/{symbol}` | Get real-time quote |
+| GET | `/api/v1/venues` | List trading venues |
 | GET | `/api/v1/algorithms` | List available algorithms |
+| POST | `/api/v1/route` | Calculate optimal routing |
+| POST | `/api/v1/tca` | Run execution simulation with TCA |
+| POST | `/api/v1/benchmark` | Compare algorithm performance |
 
-### Example Request
+## Example Request
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/route" \
+curl -X POST https://web-production-2a270.up.railway.app/api/v1/route \
   -H "Content-Type: application/json" \
   -d '{
     "symbol": "AAPL",
     "quantity": 10000,
     "side": "buy",
     "urgency": "medium",
-    "algorithm": "simulated_annealing"
+    "algorithm": "simulated_annealing",
+    "smart_allocation": true
   }'
 ```
 
-### Example Response
-
-```json
-{
-  "order_id": "uuid",
-  "symbol": "AAPL",
-  "total_quantity": 10000,
-  "estimated_cost": {
-    "total_bps": 4.2,
-    "fees_usd": 12.50,
-    "spread_cost_usd": 18.30,
-    "impact_cost_usd": 45.20,
-    "total_usd": 76.00
-  },
-  "routing": [
-    {"venue": "IEX", "allocation": 0.35, "quantity": 3500},
-    {"venue": "NASDAQ", "allocation": 0.40, "quantity": 4000},
-    {"venue": "NYSE", "allocation": 0.25, "quantity": 2500}
-  ],
-  "algorithm_used": "simulated_annealing",
-  "execution_time_ms": 45,
-  "iterations": 1000
-}
-```
-
-## Algorithm Deep Dive
-
-### Why TSP for Order Routing?
-
-The order routing problem shares key characteristics with TSP:
-1. **Combinatorial**: With n venues, there are n! possible routing sequences
-2. **NP-Hard**: No known polynomial-time exact algorithm
-3. **Metric properties**: Triangle inequality often holds (routing through intermediate venue typically costs more)
-
-### Cost Matrix Construction
-
-For each pair of venues (i, j), we compute a transition cost that captures:
-- Fee differential when moving allocation between venues
-- Spread arbitrage opportunities
-- Latency cost of sequential execution
-- Information leakage risk
-
-### Held-Karp Algorithm
-
-The Held-Karp algorithm uses dynamic programming with bitmask state compression:
+## Project Structure
 
 ```
-dp[S][i] = minimum cost to visit all venues in set S, ending at venue i
-dp[S][i] = min(dp[S\{i}][j] + cost[j][i]) for all j in S\{i}
+smart-order-router/
+├── backend/
+│   ├── app/
+│   │   ├── algorithms/      # TSP algorithm implementations
+│   │   ├── api/             # FastAPI routes
+│   │   ├── models/          # Pydantic models
+│   │   ├── services/        # Business logic
+│   │   ├── config.py        # Configuration
+│   │   └── main.py          # Application entry
+│   ├── tests/               # Unit tests
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx          # Main application
+│   │   └── services/        # API client
+│   └── package.json
+└── README.md
 ```
-
-This reduces complexity from O(n!) to O(n²·2ⁿ), making it tractable for up to ~20 venues.
-
-### Simulated Annealing for Large Scale
-
-For larger venue sets, simulated annealing provides near-optimal solutions:
-1. Start with initial routing (e.g., from nearest neighbor)
-2. Randomly perturb the solution (swap, insert, reverse)
-3. Accept worse solutions with probability exp(-ΔE/T)
-4. Gradually decrease temperature T
-
-## Performance Benchmarks
-
-Tested on M1 MacBook Pro with 10 trading venues:
-
-| Algorithm | Avg Time (ms) | Avg Cost (bps) | Optimality Gap |
-|-----------|---------------|----------------|----------------|
-| Brute Force | 2,450 | 3.8 | 0% (optimal) |
-| Held-Karp | 12 | 3.8 | 0% (optimal) |
-| Nearest Neighbor | 0.3 | 4.9 | +29% |
-| 2-Opt | 2.1 | 4.1 | +8% |
-| Simulated Annealing | 45 | 3.9 | +2.6% |
-| Genetic Algorithm | 120 | 4.0 | +5.3% |
-
-## Configuration
-
-Key configuration options in `backend/app/config.py`:
-
-```python
-class Settings:
-    # Alpaca API
-    ALPACA_API_KEY: str
-    ALPACA_SECRET_KEY: str
-    ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
-    
-    # Cost Model Parameters
-    DEFAULT_VOLATILITY: float = 0.02  # Daily volatility assumption
-    IMPACT_COEFFICIENT: float = 0.1   # Market impact scaling
-    LATENCY_COST_BPS: float = 0.5     # Cost per ms of latency
-    
-    # Algorithm Defaults
-    SA_INITIAL_TEMP: float = 1000.0
-    SA_COOLING_RATE: float = 0.995
-    SA_ITERATIONS: int = 10000
-    GA_POPULATION_SIZE: int = 100
-    GA_GENERATIONS: int = 500
-```
-
-## Venue Data
-
-Default venue configuration includes:
-
-| Venue | Type | Maker Fee (bps) | Taker Fee (bps) | Latency (ms) |
-|-------|------|-----------------|-----------------|--------------|
-| NYSE | Exchange | -0.1 | 0.3 | 0.5 |
-| NASDAQ | Exchange | -0.2 | 0.3 | 0.3 |
-| IEX | Exchange | 0.0 | 0.09 | 1.0 |
-| CBOE | Exchange | -0.3 | 0.3 | 0.4 |
-| MEMX | Exchange | -0.2 | 0.25 | 0.2 |
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/improvement`)
-3. Commit changes (`git commit -am 'Add new feature'`)
-4. Push to branch (`git push origin feature/improvement`)
-5. Open a Pull Request
-
-## License
-
-MIT License - see LICENSE file for details.
 
 ## References
 
-- Almgren, R., & Chriss, N. (2001). Optimal execution of portfolio transactions. Journal of Risk.
-- Held, M., & Karp, R. M. (1962). A dynamic programming approach to sequencing problems. Journal of SIAM.
-- Kissell, R. (2013). The Science of Algorithmic Trading and Portfolio Management. Academic Press.
+- Held, M., & Karp, R. M. (1962). A Dynamic Programming Approach to Sequencing Problems
+- Almgren, R., & Chriss, N. (2001). Optimal Execution of Portfolio Transactions
+- Kissell, R. (2013). The Science of Algorithmic Trading and Portfolio Management
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Spencer - BYU Computer Science 2025
+Spencer Hales
 
 ---
 
-*This project is for educational and personal use. It is not financial advice and should not be used for actual trading without proper risk management and regulatory compliance.*
+Built as a demonstration of applying classical optimization algorithms to real-world quantitative finance problems.
