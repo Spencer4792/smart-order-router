@@ -1,42 +1,19 @@
 # Smart Order Router - Backend Dependencies
 
 # Web Framework
-fastapi==0.109.2
-uvicorn[standard]==0.27.1
-pydantic==2.6.1
-pydantic-settings==2.1.0
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
 
-# Market Data
-alpaca-trade-api==3.0.2
-websockets==12.0
+# Data Validation
+pydantic>=2.6.0
+pydantic-settings>=2.1.0
 
-# Async HTTP
-httpx==0.26.0
-aiohttp==3.9.3
+# HTTP Client (for Alpaca API)
+httpx>=0.26.0
 
-# Data Processing
-numpy==1.26.4
-pandas==2.2.0
+# Numerical Computing
+numpy>=1.26.0
 
-# Optimization (optional, for advanced algorithms)
-scipy==1.12.0
-
-# Testing
-pytest==8.0.0
-pytest-asyncio==0.23.4
-pytest-cov==4.1.0
-
-# Code Quality
-black==24.1.1
-isort==5.13.2
-mypy==1.8.0
-ruff==0.2.1
-
-# Environment Management
-python-dotenv==1.0.1
-
-# Logging
-structlog==24.1.0
-
-# CORS
-python-multipart==0.0.9
+# Utilities
+python-dotenv>=1.0.0
+python-multipart>=0.0.9
