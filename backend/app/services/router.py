@@ -5,7 +5,9 @@ Orchestrates the routing optimization process:
 1. Fetch market data
 2. Build cost matrix
 3. Run optimization algorithm
-4. Return routing decision with cost breakdown
+4. Apply smart allocation (optional)
+5. Generate execution schedule (for VWAP/TWAP/IS)
+6. Return routing decision with cost breakdown
 """
 
 import time
@@ -15,6 +17,8 @@ from typing import Optional
 import numpy as np
 
 from app.algorithms import get_algorithm
+from app.algorithms.allocation_optimizer import AllocationOptimizer, AllocationResult
+from app.algorithms.execution_strategies import ExecutionStrategyEngine, ExecutionStrategy
 from app.config import VenueConfig
 from app.models.cost import CostMatrixBuilder, CostModel
 from app.models.order import (
@@ -23,6 +27,9 @@ from app.models.order import (
     BenchmarkRequest,
     BenchmarkResult,
     CostBreakdown,
+    ExecutionScheduleInfo,
+    ExecutionSlice,
+    ExecutionStrategyType,
     MarketData,
     OrderRequest,
     OrderSide,
@@ -44,7 +51,9 @@ class OrderRoutingService:
     2. Fetches current market data
     3. Constructs the cost model and matrix
     4. Runs the selected optimization algorithm
-    5. Returns detailed routing recommendations
+    5. Applies smart allocation optimization
+    6. Generates execution schedule (VWAP/TWAP/IS)
+    7. Returns detailed routing recommendations
     """
     
     def __init__(
@@ -55,6 +64,8 @@ class OrderRoutingService:
         self.market_data = market_data_service or MarketDataService()
         self.cost_model = cost_model or CostModel()
         self.cost_matrix_builder = CostMatrixBuilder(self.cost_model)
+        self.allocation_optimizer = AllocationOptimizer()
+        self.execution_engine = ExecutionStrategyEngine()
     
     def _get_venues(self, include_dark_pools: bool = False) -> list[Venue]:
         """
@@ -118,16 +129,47 @@ class OrderRoutingService:
             adv=adv,
         )
         
-        # Run optimization
+        # Run routing sequence optimization
         algorithm = get_algorithm(request.algorithm)
         solution = algorithm.optimize(cost_matrix)
         
+        # Apply smart allocation or equal allocation
+        if request.smart_allocation:
+            allocation_results = self.allocation_optimizer.optimize_allocation(
+                venues=venues,
+                total_quantity=request.quantity,
+                market_data=market_data,
+                adv=adv,
+                urgency=request.urgency,
+            )
+            allocation_method = "smart"
+        else:
+            # Equal allocation (original behavior)
+            allocation_results = [
+                AllocationResult(
+                    venue_id=venues[i].id,
+                    allocation=1.0 / len(venues),
+                    quantity=request.quantity // len(venues),
+                    reasoning="Equal allocation"
+                )
+                for i in range(len(venues))
+            ]
+            # Fix rounding
+            total_qty = sum(a.quantity for a in allocation_results)
+            if allocation_results and total_qty != request.quantity:
+                allocation_results[0].quantity += (request.quantity - total_qty)
+            allocation_method = "equal"
+        
+        # Create venue lookup for allocation results
+        allocation_by_venue = {a.venue_id: a for a in allocation_results}
+        
         execution_time_ms = (time.perf_counter() - start_time) * 1000
         
-        # Build routing result
-        routing = self._build_routing_allocations(
+        # Build routing result using optimized sequence and smart allocations
+        routing = self._build_routing_allocations_smart(
             solution=solution,
             venues=venues,
+            allocation_by_venue=allocation_by_venue,
             total_quantity=request.quantity,
             market_data=market_data,
             side=request.side,
@@ -137,6 +179,45 @@ class OrderRoutingService:
         
         # Calculate total cost breakdown
         cost = self._calculate_total_cost(routing, request.quantity, market_data.mid_price)
+        
+        # Generate execution schedule if not instant
+        execution_schedule = None
+        if request.execution_strategy != ExecutionStrategyType.INSTANT:
+            strategy_map = {
+                ExecutionStrategyType.VWAP: ExecutionStrategy.VWAP,
+                ExecutionStrategyType.TWAP: ExecutionStrategy.TWAP,
+                ExecutionStrategyType.IMPLEMENTATION_SHORTFALL: ExecutionStrategy.IMPLEMENTATION_SHORTFALL,
+                ExecutionStrategyType.AGGRESSIVE: ExecutionStrategy.AGGRESSIVE,
+                ExecutionStrategyType.PASSIVE: ExecutionStrategy.PASSIVE,
+            }
+            
+            schedule = self.execution_engine.generate_schedule(
+                strategy=strategy_map[request.execution_strategy],
+                total_quantity=request.quantity,
+                adv=adv,
+                duration_minutes=request.duration_minutes or 120,
+            )
+            
+            execution_schedule = ExecutionScheduleInfo(
+                strategy=request.execution_strategy,
+                duration_minutes=schedule.duration_minutes,
+                num_slices=len(schedule.slices),
+                slices=[
+                    ExecutionSlice(
+                        slice_id=s.slice_id,
+                        start_time=s.start_time,
+                        end_time=s.end_time,
+                        target_quantity=s.target_quantity,
+                        target_percentage=s.target_percentage,
+                        cumulative_percentage=s.cumulative_percentage,
+                        volume_participation=s.volume_participation,
+                        urgency_factor=s.urgency_factor,
+                    )
+                    for s in schedule.slices
+                ],
+                expected_participation_rate=schedule.expected_participation_rate,
+                risk_score=schedule.risk_score,
+            )
         
         # Calculate baseline (single best venue) for comparison
         baseline_cost = self._calculate_baseline_cost(
@@ -166,6 +247,8 @@ class OrderRoutingService:
                 final_temperature=solution.metadata.get("final_temperature") if solution.metadata else None,
                 generations=solution.metadata.get("generations") if solution.metadata else None,
             ),
+            execution_schedule=execution_schedule,
+            allocation_method=allocation_method,
             baseline_cost=baseline_cost,
             savings_vs_baseline_bps=savings,
         )
@@ -210,7 +293,77 @@ class OrderRoutingService:
                 estimated_impact_cost_usd=costs.impact_usd,
                 estimated_total_cost_usd=costs.total_usd,
                 execution_sequence=seq_idx + 1,
+                allocation_reasoning="Equal allocation",
             ))
+        
+        # Ensure quantities sum to total (handle rounding)
+        total_allocated = sum(a.quantity for a in allocations)
+        if total_allocated != total_quantity and allocations:
+            allocations[0].quantity += (total_quantity - total_allocated)
+        
+        return allocations
+    
+    def _build_routing_allocations_smart(
+        self,
+        solution,
+        venues: list[Venue],
+        allocation_by_venue: dict[str, AllocationResult],
+        total_quantity: int,
+        market_data: MarketData,
+        side: OrderSide,
+        urgency: OrderUrgency,
+        adv: int,
+    ) -> list[VenueAllocation]:
+        """Build detailed venue allocations using smart allocation results."""
+        allocations = []
+        
+        # Use solution route for sequence, but smart allocation for quantities
+        for seq_idx, venue_idx in enumerate(solution.route):
+            venue = venues[venue_idx]
+            
+            # Get smart allocation for this venue
+            smart_alloc = allocation_by_venue.get(venue.id)
+            if smart_alloc:
+                allocation_fraction = smart_alloc.allocation
+                quantity = smart_alloc.quantity
+                reasoning = smart_alloc.reasoning
+            else:
+                # Fallback to equal
+                allocation_fraction = 1.0 / len(solution.route)
+                quantity = int(total_quantity * allocation_fraction)
+                reasoning = "Equal allocation (fallback)"
+            
+            # Calculate costs for this allocation
+            costs = self.cost_model.calculate_venue_cost(
+                venue=venue,
+                quantity=quantity,
+                market_data=market_data,
+                side=side,
+                urgency=urgency,
+                adv=adv,
+                sequence_position=seq_idx,
+            )
+            
+            allocations.append(VenueAllocation(
+                venue_id=venue.id,
+                venue_name=venue.name,
+                venue_type=venue.type,
+                allocation=allocation_fraction,
+                quantity=quantity,
+                estimated_fee_usd=costs.fee_usd,
+                estimated_spread_cost_usd=costs.spread_usd,
+                estimated_impact_cost_usd=costs.impact_usd,
+                estimated_total_cost_usd=costs.total_usd,
+                execution_sequence=seq_idx + 1,
+                allocation_reasoning=reasoning,
+            ))
+        
+        # Sort by allocation (highest first) for better display
+        allocations.sort(key=lambda x: x.allocation, reverse=True)
+        
+        # Re-assign sequence numbers after sorting
+        for i, alloc in enumerate(allocations):
+            alloc.execution_sequence = i + 1
         
         # Ensure quantities sum to total (handle rounding)
         total_allocated = sum(a.quantity for a in allocations)

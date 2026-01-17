@@ -36,6 +36,15 @@ const ALGORITHMS = [
   { value: 'brute_force', label: 'Brute Force (Exact)', complexity: 'O(n!)' },
 ];
 
+const EXECUTION_STRATEGIES = [
+  { value: 'instant', label: 'Instant', description: 'Execute immediately' },
+  { value: 'vwap', label: 'VWAP', description: 'Volume Weighted Avg Price' },
+  { value: 'twap', label: 'TWAP', description: 'Time Weighted Avg Price' },
+  { value: 'is', label: 'Impl. Shortfall', description: 'Minimize slippage' },
+  { value: 'aggressive', label: 'Aggressive', description: 'Front-loaded execution' },
+  { value: 'passive', label: 'Passive', description: 'Back-loaded execution' },
+];
+
 const VENUE_COLORS = [
   '#58a6ff', '#3fb950', '#d29922', '#f85149', '#a371f7',
   '#79c0ff', '#7ee787', '#e3b341', '#ff7b72', '#d2a8ff',
@@ -251,11 +260,17 @@ function CostBreakdownChart({ cost }) {
   );
 }
 
-function RoutingTable({ routing }) {
+function RoutingTable({ routing, allocationMethod }) {
   if (!routing || routing.length === 0) return null;
 
   return (
     <div className="overflow-x-auto">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs text-terminal-muted">Allocation method:</span>
+        <span className={`text-xs font-mono px-2 py-0.5 rounded ${allocationMethod === 'smart' ? 'bg-terminal-green/20 text-terminal-green' : 'bg-terminal-border text-terminal-muted'}`}>
+          {allocationMethod === 'smart' ? 'Smart (optimized)' : 'Equal'}
+        </span>
+      </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-terminal-border">
@@ -268,7 +283,7 @@ function RoutingTable({ routing }) {
         </thead>
         <tbody>
           {routing.map((r, i) => (
-            <tr key={i} className="border-b border-terminal-border/50 hover:bg-terminal-border/20">
+            <tr key={i} className="border-b border-terminal-border/50 hover:bg-terminal-border/20 group">
               <td className="py-2 px-3 font-mono text-terminal-muted">{r.execution_sequence}</td>
               <td className="py-2 px-3">
                 <div className="flex items-center gap-2">
@@ -276,7 +291,12 @@ function RoutingTable({ routing }) {
                     className="w-2 h-2 rounded-full"
                     style={{ backgroundColor: VENUE_COLORS[i % VENUE_COLORS.length] }}
                   />
-                  <span className="font-mono">{r.venue_id}</span>
+                  <div>
+                    <span className="font-mono">{r.venue_id}</span>
+                    {r.allocation_reasoning && (
+                      <p className="text-xs text-terminal-muted hidden group-hover:block">{r.allocation_reasoning}</p>
+                    )}
+                  </div>
                 </div>
               </td>
               <td className="py-2 px-3 text-right font-mono">{formatNumber(r.allocation * 100, 1)}%</td>
@@ -319,6 +339,71 @@ function AlgorithmMetrics({ metrics }) {
   );
 }
 
+function ExecutionScheduleChart({ schedule }) {
+  if (!schedule || !schedule.slices || schedule.slices.length === 0) return null;
+
+  const data = schedule.slices.map((slice, i) => ({
+    name: `T${i + 1}`,
+    quantity: slice.target_quantity,
+    percentage: slice.target_percentage * 100,
+    cumulative: slice.cumulative_percentage * 100,
+    participation: slice.volume_participation * 100,
+  }));
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-terminal-bg rounded p-3">
+          <p className="text-terminal-muted text-xs uppercase">Strategy</p>
+          <p className="font-mono text-lg uppercase">{schedule.strategy}</p>
+        </div>
+        <div className="bg-terminal-bg rounded p-3">
+          <p className="text-terminal-muted text-xs uppercase">Duration</p>
+          <p className="font-mono text-lg">{schedule.duration_minutes} min</p>
+        </div>
+        <div className="bg-terminal-bg rounded p-3">
+          <p className="text-terminal-muted text-xs uppercase">Risk Score</p>
+          <p className={`font-mono text-lg ${schedule.risk_score > 0.7 ? 'text-terminal-red' : schedule.risk_score > 0.4 ? 'text-terminal-yellow' : 'text-terminal-green'}`}>
+            {formatNumber(schedule.risk_score * 100, 0)}%
+          </p>
+        </div>
+      </div>
+      
+      <div className="h-48">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1c2128" />
+            <XAxis dataKey="name" stroke="#6e7681" fontSize={10} />
+            <YAxis stroke="#6e7681" fontSize={10} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: '#0d1117',
+                border: '1px solid #1c2128',
+                borderRadius: '8px',
+                fontFamily: 'JetBrains Mono, monospace',
+                fontSize: '12px',
+                color: '#c9d1d9',
+              }}
+              itemStyle={{ color: '#c9d1d9' }}
+              labelStyle={{ color: '#c9d1d9' }}
+              formatter={(value, name) => {
+                if (name === 'quantity') return [value.toLocaleString() + ' shares', 'Quantity'];
+                if (name === 'percentage') return [formatNumber(value, 1) + '%', 'Allocation'];
+                return [formatNumber(value, 1) + '%', name];
+              }}
+            />
+            <Bar dataKey="quantity" fill="#58a6ff" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      
+      <div className="text-xs text-terminal-muted">
+        Expected market participation: {formatNumber(schedule.expected_participation_rate * 100, 2)}% of volume
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [symbol, setSymbol] = useState('AAPL');
   const [quantity, setQuantity] = useState('10000');
@@ -326,6 +411,9 @@ export default function App() {
   const [urgency, setUrgency] = useState('medium');
   const [algorithm, setAlgorithm] = useState('simulated_annealing');
   const [includeDarkPools, setIncludeDarkPools] = useState(false);
+  const [executionStrategy, setExecutionStrategy] = useState('instant');
+  const [durationMinutes, setDurationMinutes] = useState('120');
+  const [smartAllocation, setSmartAllocation] = useState(true);
 
   const [status, setStatus] = useState('idle');
   const [result, setResult] = useState(null);
@@ -343,6 +431,9 @@ export default function App() {
         urgency,
         algorithm,
         include_dark_pools: includeDarkPools,
+        execution_strategy: executionStrategy,
+        duration_minutes: parseInt(durationMinutes, 10),
+        smart_allocation: smartAllocation,
       });
       setResult(response);
       setQuote(response.market_data);
@@ -457,6 +548,45 @@ export default function App() {
                   <p className="text-xs text-terminal-muted mt-1 font-mono">
                     {ALGORITHMS.find(a => a.value === algorithm)?.complexity}
                   </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-terminal-muted uppercase tracking-wider mb-1">Execution Strategy</label>
+                  <Select
+                    value={executionStrategy}
+                    onChange={setExecutionStrategy}
+                    options={EXECUTION_STRATEGIES}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-terminal-muted mt-1">
+                    {EXECUTION_STRATEGIES.find(s => s.value === executionStrategy)?.description}
+                  </p>
+                </div>
+
+                {executionStrategy !== 'instant' && (
+                  <div>
+                    <label className="block text-xs text-terminal-muted uppercase tracking-wider mb-1">Duration (minutes)</label>
+                    <Input
+                      type="number"
+                      value={durationMinutes}
+                      onChange={setDurationMinutes}
+                      placeholder="120"
+                      className="w-full"
+                    />
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="smartAllocation"
+                    checked={smartAllocation}
+                    onChange={(e) => setSmartAllocation(e.target.checked)}
+                    className="rounded border-terminal-border bg-terminal-bg"
+                  />
+                  <label htmlFor="smartAllocation" className="text-sm text-terminal-muted">
+                    Smart allocation (vs equal)
+                  </label>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -578,8 +708,19 @@ export default function App() {
                 {/* Routing Table */}
                 <Card className="p-4">
                   <h3 className="text-sm font-medium text-terminal-text mb-4">Routing Details</h3>
-                  <RoutingTable routing={result.routing} />
+                  <RoutingTable routing={result.routing} allocationMethod={result.allocation_method} />
                 </Card>
+
+                {/* Execution Schedule (if not instant) */}
+                {result.execution_schedule && (
+                  <Card className="p-4">
+                    <h3 className="text-sm font-medium text-terminal-text mb-4 flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-terminal-accent" />
+                      Execution Schedule
+                    </h3>
+                    <ExecutionScheduleChart schedule={result.execution_schedule} />
+                  </Card>
+                )}
 
                 {/* Algorithm Metrics */}
                 <Card className="p-4">

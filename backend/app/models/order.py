@@ -29,6 +29,16 @@ class OrderUrgency(str, Enum):
     HIGH = "high"
 
 
+class ExecutionStrategyType(str, Enum):
+    """Available execution strategies."""
+    VWAP = "vwap"
+    TWAP = "twap"
+    IMPLEMENTATION_SHORTFALL = "is"
+    AGGRESSIVE = "aggressive"
+    PASSIVE = "passive"
+    INSTANT = "instant"  # Execute immediately (original behavior)
+
+
 class AlgorithmType(str, Enum):
     """Available routing optimization algorithms."""
     BRUTE_FORCE = "brute_force"
@@ -109,6 +119,22 @@ class OrderRequest(BaseModel):
         description="Maximum number of venues to consider"
     )
     
+    # New execution strategy options
+    execution_strategy: ExecutionStrategyType = Field(
+        default=ExecutionStrategyType.INSTANT,
+        description="Execution strategy (VWAP, TWAP, IS, or instant)"
+    )
+    duration_minutes: Optional[int] = Field(
+        default=120,
+        ge=15,
+        le=390,
+        description="Execution duration in minutes (for VWAP/TWAP/IS)"
+    )
+    smart_allocation: bool = Field(
+        default=True,
+        description="Use smart allocation optimization (vs equal allocation)"
+    )
+    
     @field_validator("symbol")
     @classmethod
     def symbol_uppercase(cls, v: str) -> str:
@@ -129,6 +155,29 @@ class VenueAllocation(BaseModel):
     estimated_impact_cost_usd: float
     estimated_total_cost_usd: float
     execution_sequence: int = Field(description="Order in execution sequence (1-indexed)")
+    allocation_reasoning: Optional[str] = Field(default=None, description="Why this allocation was chosen")
+
+
+class ExecutionSlice(BaseModel):
+    """A single time slice in the execution schedule."""
+    slice_id: int
+    start_time: datetime
+    end_time: datetime
+    target_quantity: int
+    target_percentage: float
+    cumulative_percentage: float
+    volume_participation: float
+    urgency_factor: float
+
+
+class ExecutionScheduleInfo(BaseModel):
+    """Execution schedule information."""
+    strategy: ExecutionStrategyType
+    duration_minutes: int
+    num_slices: int
+    slices: list[ExecutionSlice]
+    expected_participation_rate: float
+    risk_score: float
 
 
 class CostBreakdown(BaseModel):
@@ -177,6 +226,12 @@ class RoutingResult(BaseModel):
     routing: list[VenueAllocation]
     cost: CostBreakdown
     algorithm_metrics: AlgorithmMetrics
+    
+    # Execution schedule (for VWAP/TWAP/IS)
+    execution_schedule: Optional[ExecutionScheduleInfo] = None
+    
+    # Allocation method used
+    allocation_method: str = Field(default="equal", description="'smart' or 'equal'")
     
     # Comparison (optional)
     baseline_cost: Optional[CostBreakdown] = Field(
