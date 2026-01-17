@@ -6,9 +6,12 @@ algorithms to smart order routing.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.api.routes import router
 from app.config import get_settings
@@ -53,9 +56,11 @@ routing large trades across multiple trading venues.
 
 - **Multiple Algorithms**: Compare exact (Brute Force, Held-Karp) and heuristic 
   (Nearest Neighbor, 2-Opt, Simulated Annealing, Genetic) algorithms
+- **Smart Allocation**: Liquidity-aware allocation optimization
+- **Execution Strategies**: VWAP, TWAP, Implementation Shortfall
+- **Transaction Cost Analysis**: Post-trade execution analysis
 - **Real Market Data**: Integration with Alpaca Markets API for live quotes
 - **Comprehensive Cost Model**: Fees, spread, market impact, and latency costs
-- **Algorithm Benchmarking**: Compare algorithm performance side-by-side
 
 ### Cost Model
 
@@ -80,8 +85,29 @@ Impact = σ × η × √(Q / ADV)
         allow_headers=["*"],
     )
     
-    # Include routes
+    # Include API routes
     app.include_router(router)
+    
+    # Serve static frontend in production
+    frontend_path = Path(__file__).parent.parent.parent / "frontend" / "dist"
+    if frontend_path.exists():
+        # Serve static assets
+        if (frontend_path / "assets").exists():
+            app.mount("/assets", StaticFiles(directory=frontend_path / "assets"), name="assets")
+        
+        @app.get("/")
+        async def serve_frontend():
+            return FileResponse(frontend_path / "index.html")
+        
+        @app.get("/{full_path:path}")
+        async def serve_frontend_routes(full_path: str):
+            # Don't intercept API or docs routes
+            if full_path.startswith(("api/", "docs", "redoc", "openapi")):
+                return None
+            file_path = frontend_path / full_path
+            if file_path.exists() and file_path.is_file():
+                return FileResponse(file_path)
+            return FileResponse(frontend_path / "index.html")
     
     return app
 
