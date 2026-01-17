@@ -277,3 +277,100 @@ class BenchmarkResult(BaseModel):
     best_algorithm: AlgorithmType
     worst_algorithm: AlgorithmType
     cost_range_bps: float = Field(description="Difference between best and worst in bps")
+
+
+class TCARequest(BaseModel):
+    """Request to run TCA analysis."""
+    
+    symbol: str = Field(description="Stock symbol")
+    quantity: int = Field(gt=0, description="Number of shares")
+    side: OrderSide = Field(default=OrderSide.BUY)
+    urgency: OrderUrgency = Field(default=OrderUrgency.MEDIUM)
+    algorithm: AlgorithmType = Field(default=AlgorithmType.SIMULATED_ANNEALING)
+    execution_strategy: ExecutionStrategyType = Field(default=ExecutionStrategyType.VWAP)
+    duration_minutes: int = Field(default=120, ge=15, le=390)
+    smart_allocation: bool = Field(default=True)
+    seed: Optional[int] = Field(default=None, description="Random seed for reproducibility")
+    
+    @field_validator("symbol")
+    @classmethod
+    def symbol_uppercase(cls, v: str) -> str:
+        return v.upper().strip()
+
+
+class CostAttributionResponse(BaseModel):
+    """Cost attribution breakdown."""
+    spread_cost_bps: float
+    impact_cost_bps: float
+    timing_cost_bps: float
+    fee_cost_bps: float
+    opportunity_cost_bps: float
+    total_bps: float
+
+
+class VenuePerformance(BaseModel):
+    """Per-venue execution performance."""
+    venue_id: str
+    quantity: int
+    num_fills: int
+    avg_price: float
+    slippage_bps: float
+    fees_usd: float
+    notional: float
+
+
+class ExecutionFillResponse(BaseModel):
+    """A single execution fill."""
+    fill_id: int
+    timestamp: datetime
+    venue_id: str
+    quantity: int
+    price: float
+    fee_usd: float
+
+
+class TCAResponse(BaseModel):
+    """TCA analysis response."""
+    
+    # Order Info
+    order_id: str
+    symbol: str
+    side: OrderSide
+    total_quantity: int
+    filled_quantity: int
+    
+    # Prices
+    arrival_price: float
+    average_fill_price: float
+    vwap_benchmark: float
+    twap_benchmark: float
+    final_price: float
+    
+    # Performance (negative = outperformed, positive = underperformed)
+    arrival_slippage_bps: float
+    vwap_slippage_bps: float
+    twap_slippage_bps: float
+    implementation_shortfall_bps: float
+    
+    # Cost Attribution
+    cost_attribution: CostAttributionResponse
+    
+    # Quality Metrics
+    fill_rate: float
+    participation_rate: float
+    price_improvement_bps: float
+    
+    # Risk Metrics
+    execution_risk_score: float
+    timing_risk_realized_bps: float
+    
+    # Execution Details
+    num_fills: int
+    duration_seconds: float
+    fills: list[ExecutionFillResponse]
+    
+    # Venue Analysis
+    venue_performance: list[VenuePerformance]
+    
+    # Original routing used
+    routing_cost_estimate_bps: float

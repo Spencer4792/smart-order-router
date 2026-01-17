@@ -302,7 +302,7 @@ MIT License - see LICENSE file for details.
 
 ## Author
 
-Spencer Hales
+Spencer - BYU Computer Science 2025
 
 ---
 

@@ -12,14 +12,20 @@ from app.models.order import (
     AlgorithmType,
     BenchmarkRequest,
     BenchmarkResult,
+    CostAttributionResponse,
+    ExecutionFillResponse,
     MarketData,
     OrderRequest,
     RoutingResult,
+    TCARequest,
+    TCAResponse,
     Venue,
+    VenuePerformance,
     VenueType,
 )
 from app.services.market_data import get_market_data_service
 from app.services.router import get_routing_service
+from app.services.tca import TCAAnalyzer, ExecutionSimulator
 
 router = APIRouter(prefix="/api/v1", tags=["routing"])
 
@@ -157,3 +163,104 @@ async def get_average_daily_volume(
         return {"symbol": symbol.upper(), "adv": adv, "days": days}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to calculate ADV: {str(e)}")
+
+
+@router.post("/tca", response_model=TCAResponse)
+async def run_tca_analysis(request: TCARequest):
+    """
+    Run Transaction Cost Analysis on a simulated execution.
+    
+    This endpoint:
+    1. Creates an optimal routing plan
+    2. Simulates execution with realistic market dynamics
+    3. Analyzes execution quality vs benchmarks
+    4. Attributes costs to different factors
+    
+    Key metrics returned:
+    - Implementation Shortfall: Total cost vs arrival price
+    - VWAP Slippage: Performance vs volume-weighted average
+    - Cost Attribution: Breakdown of spread, impact, timing, fees
+    - Venue Performance: How each venue contributed
+    
+    Use this to evaluate different strategies and parameters.
+    """
+    try:
+        # First, get the routing plan
+        routing_service = get_routing_service()
+        routing_request = OrderRequest(
+            symbol=request.symbol,
+            quantity=request.quantity,
+            side=request.side,
+            urgency=request.urgency,
+            algorithm=request.algorithm,
+            execution_strategy=request.execution_strategy,
+            duration_minutes=request.duration_minutes,
+            smart_allocation=request.smart_allocation,
+        )
+        routing_result = await routing_service.route_order(routing_request)
+        
+        # Run TCA analysis
+        simulator = ExecutionSimulator(seed=request.seed)
+        analyzer = TCAAnalyzer(simulator)
+        tca_report = analyzer.analyze(routing_result)
+        
+        # Build response
+        return TCAResponse(
+            order_id=tca_report.order_id,
+            symbol=tca_report.symbol,
+            side=tca_report.side,
+            total_quantity=tca_report.total_quantity,
+            filled_quantity=tca_report.filled_quantity,
+            arrival_price=tca_report.arrival_price,
+            average_fill_price=tca_report.average_fill_price,
+            vwap_benchmark=tca_report.vwap_benchmark,
+            twap_benchmark=tca_report.twap_benchmark,
+            final_price=tca_report.execution.final_price,
+            arrival_slippage_bps=round(tca_report.arrival_slippage_bps, 2),
+            vwap_slippage_bps=round(tca_report.vwap_slippage_bps, 2),
+            twap_slippage_bps=round(tca_report.twap_slippage_bps, 2),
+            implementation_shortfall_bps=round(tca_report.implementation_shortfall_bps, 2),
+            cost_attribution=CostAttributionResponse(
+                spread_cost_bps=round(tca_report.cost_attribution.spread_cost_bps, 2),
+                impact_cost_bps=round(tca_report.cost_attribution.impact_cost_bps, 2),
+                timing_cost_bps=round(tca_report.cost_attribution.timing_cost_bps, 2),
+                fee_cost_bps=round(tca_report.cost_attribution.fee_cost_bps, 2),
+                opportunity_cost_bps=round(tca_report.cost_attribution.opportunity_cost_bps, 2),
+                total_bps=round(tca_report.cost_attribution.total_bps, 2),
+            ),
+            fill_rate=round(tca_report.fill_rate, 4),
+            participation_rate=round(tca_report.participation_rate, 4),
+            price_improvement_bps=round(tca_report.price_improvement_bps, 2),
+            execution_risk_score=round(tca_report.execution_risk_score, 2),
+            timing_risk_realized_bps=round(tca_report.timing_risk_realized, 2),
+            num_fills=tca_report.execution.num_fills,
+            duration_seconds=tca_report.execution.duration_seconds,
+            fills=[
+                ExecutionFillResponse(
+                    fill_id=f.fill_id,
+                    timestamp=f.timestamp,
+                    venue_id=f.venue_id,
+                    quantity=f.quantity,
+                    price=f.price,
+                    fee_usd=round(f.fee_usd, 4),
+                )
+                for f in tca_report.execution.fills
+            ],
+            venue_performance=[
+                VenuePerformance(
+                    venue_id=venue_id,
+                    quantity=perf["quantity"],
+                    num_fills=perf["num_fills"],
+                    avg_price=perf["avg_price"],
+                    slippage_bps=perf["slippage_bps"],
+                    fees_usd=perf["fees_usd"],
+                    notional=perf["notional"],
+                )
+                for venue_id, perf in tca_report.venue_performance.items()
+            ],
+            routing_cost_estimate_bps=round(routing_result.cost.total_bps, 2),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TCA analysis failed: {str(e)}")

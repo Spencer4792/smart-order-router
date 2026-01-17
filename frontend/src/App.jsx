@@ -25,7 +25,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { routeOrder, benchmarkAlgorithms, fetchQuote } from './services/api';
+import { routeOrder, benchmarkAlgorithms, fetchQuote, runTCA } from './services/api';
 
 const ALGORITHMS = [
   { value: 'nearest_neighbor', label: 'Nearest Neighbor', complexity: 'O(n²)' },
@@ -404,6 +404,258 @@ function ExecutionScheduleChart({ schedule }) {
   );
 }
 
+function TCAResults({ tca }) {
+  if (!tca) return null;
+
+  const slippageColor = (val) => {
+    if (val < 0) return 'text-terminal-green';
+    if (val > 2) return 'text-terminal-red';
+    return 'text-terminal-yellow';
+  };
+
+  const costAttributionData = [
+    { name: 'Spread', value: tca.cost_attribution.spread_cost_bps, fill: '#58a6ff' },
+    { name: 'Impact', value: tca.cost_attribution.impact_cost_bps, fill: '#3fb950' },
+    { name: 'Timing', value: tca.cost_attribution.timing_cost_bps, fill: '#d29922' },
+    { name: 'Fees', value: tca.cost_attribution.fee_cost_bps, fill: '#f85149' },
+    { name: 'Opportunity', value: tca.cost_attribution.opportunity_cost_bps, fill: '#a371f7' },
+  ].filter(d => d.value > 0);
+
+  const fillsOverTime = tca.fills.map((f, i) => ({
+    name: `F${i + 1}`,
+    price: f.price,
+    quantity: f.quantity,
+    venue: f.venue_id,
+  }));
+
+  return (
+    <div className="space-y-6 animate-slide-up">
+      {/* Performance Summary */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <MetricCard
+          icon={TrendingUp}
+          label="Impl. Shortfall"
+          value={formatBps(tca.implementation_shortfall_bps)}
+          subValue={tca.implementation_shortfall_bps < 0 ? 'Outperformed' : 'Underperformed'}
+        />
+        <MetricCard
+          icon={BarChart3}
+          label="vs VWAP"
+          value={formatBps(tca.vwap_slippage_bps)}
+          subValue={tca.vwap_slippage_bps < 0 ? 'Beat VWAP' : 'Missed VWAP'}
+        />
+        <MetricCard
+          icon={Activity}
+          label="Fill Rate"
+          value={`${formatNumber(tca.fill_rate * 100, 1)}%`}
+          subValue={`${tca.filled_quantity.toLocaleString()} filled`}
+        />
+        <MetricCard
+          icon={Zap}
+          label="Total Cost"
+          value={formatBps(tca.cost_attribution.total_bps)}
+          subValue={formatUsd(tca.cost_attribution.total_bps * tca.filled_quantity * tca.average_fill_price / 10000)}
+        />
+      </div>
+
+      {/* Price Summary */}
+      <Card className="p-4">
+        <h3 className="text-sm font-medium text-terminal-text mb-4">Price Analysis</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-terminal-bg rounded p-3">
+            <p className="text-terminal-muted text-xs uppercase">Arrival Price</p>
+            <p className="font-mono text-lg">{formatUsd(tca.arrival_price)}</p>
+          </div>
+          <div className="bg-terminal-bg rounded p-3">
+            <p className="text-terminal-muted text-xs uppercase">Avg Fill Price</p>
+            <p className={`font-mono text-lg ${slippageColor(tca.arrival_slippage_bps)}`}>
+              {formatUsd(tca.average_fill_price)}
+            </p>
+          </div>
+          <div className="bg-terminal-bg rounded p-3">
+            <p className="text-terminal-muted text-xs uppercase">VWAP Benchmark</p>
+            <p className="font-mono text-lg">{formatUsd(tca.vwap_benchmark)}</p>
+          </div>
+          <div className="bg-terminal-bg rounded p-3">
+            <p className="text-terminal-muted text-xs uppercase">Final Price</p>
+            <p className="font-mono text-lg">{formatUsd(tca.final_price)}</p>
+          </div>
+        </div>
+      </Card>
+
+      {/* Slippage Comparison */}
+      <Card className="p-4">
+        <h3 className="text-sm font-medium text-terminal-text mb-4">Benchmark Comparison</h3>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-terminal-muted">vs Arrival Price</span>
+            <span className={`font-mono ${slippageColor(tca.arrival_slippage_bps)}`}>
+              {tca.arrival_slippage_bps >= 0 ? '+' : ''}{formatNumber(tca.arrival_slippage_bps, 2)} bps
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-terminal-muted">vs VWAP</span>
+            <span className={`font-mono ${slippageColor(tca.vwap_slippage_bps)}`}>
+              {tca.vwap_slippage_bps >= 0 ? '+' : ''}{formatNumber(tca.vwap_slippage_bps, 2)} bps
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-terminal-muted">vs TWAP</span>
+            <span className={`font-mono ${slippageColor(tca.twap_slippage_bps)}`}>
+              {tca.twap_slippage_bps >= 0 ? '+' : ''}{formatNumber(tca.twap_slippage_bps, 2)} bps
+            </span>
+          </div>
+          <div className="flex items-center justify-between border-t border-terminal-border pt-3 mt-3">
+            <span className="text-sm font-medium">Price Improvement</span>
+            <span className={`font-mono ${tca.price_improvement_bps > 0 ? 'text-terminal-green' : 'text-terminal-red'}`}>
+              {tca.price_improvement_bps >= 0 ? '+' : ''}{formatNumber(tca.price_improvement_bps, 2)} bps
+            </span>
+          </div>
+        </div>
+      </Card>
+
+      {/* Cost Attribution */}
+      <Card className="p-4">
+        <h3 className="text-sm font-medium text-terminal-text mb-4">Cost Attribution</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={costAttributionData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={70}
+                  innerRadius={40}
+                >
+                  {costAttributionData.map((entry, index) => (
+                    <Cell key={index} fill={entry.fill} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#0d1117',
+                    border: '1px solid #1c2128',
+                    borderRadius: '8px',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontSize: '12px',
+                    color: '#c9d1d9',
+                  }}
+                  itemStyle={{ color: '#c9d1d9' }}
+                  formatter={(value) => [`${formatNumber(value, 2)} bps`, '']}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="space-y-2">
+            {costAttributionData.map((item) => (
+              <div key={item.name} className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded" style={{ backgroundColor: item.fill }} />
+                  <span className="text-sm text-terminal-muted">{item.name}</span>
+                </div>
+                <span className="font-mono text-sm">{formatNumber(item.value, 2)} bps</span>
+              </div>
+            ))}
+            <div className="flex items-center justify-between border-t border-terminal-border pt-2 mt-2">
+              <span className="text-sm font-medium">Total</span>
+              <span className="font-mono font-medium">{formatNumber(tca.cost_attribution.total_bps, 2)} bps</span>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Execution Timeline */}
+      <Card className="p-4">
+        <h3 className="text-sm font-medium text-terminal-text mb-4">Execution Timeline</h3>
+        <div className="h-48">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={fillsOverTime}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1c2128" />
+              <XAxis dataKey="name" stroke="#6e7681" fontSize={10} />
+              <YAxis stroke="#6e7681" fontSize={10} domain={['dataMin - 0.1', 'dataMax + 0.1']} />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#0d1117',
+                  border: '1px solid #1c2128',
+                  borderRadius: '8px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  fontSize: '12px',
+                  color: '#c9d1d9',
+                }}
+                itemStyle={{ color: '#c9d1d9' }}
+                labelStyle={{ color: '#c9d1d9' }}
+                formatter={(value, name, props) => {
+                  if (name === 'price') return [formatUsd(value), 'Price'];
+                  return [value, name];
+                }}
+              />
+              <Bar dataKey="price" fill="#58a6ff" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="mt-3 text-xs text-terminal-muted">
+          {tca.num_fills} fills over {formatNumber(tca.duration_seconds / 60, 0)} minutes
+        </div>
+      </Card>
+
+      {/* Venue Performance */}
+      <Card className="p-4">
+        <h3 className="text-sm font-medium text-terminal-text mb-4">Venue Performance</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-terminal-border">
+                <th className="text-left py-2 px-3 text-terminal-muted font-medium text-xs uppercase">Venue</th>
+                <th className="text-right py-2 px-3 text-terminal-muted font-medium text-xs uppercase">Quantity</th>
+                <th className="text-right py-2 px-3 text-terminal-muted font-medium text-xs uppercase">Avg Price</th>
+                <th className="text-right py-2 px-3 text-terminal-muted font-medium text-xs uppercase">Slippage</th>
+                <th className="text-right py-2 px-3 text-terminal-muted font-medium text-xs uppercase">Fees</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tca.venue_performance.map((v, i) => (
+                <tr key={i} className="border-b border-terminal-border/50">
+                  <td className="py-2 px-3 font-mono">{v.venue_id}</td>
+                  <td className="py-2 px-3 text-right font-mono">{v.quantity.toLocaleString()}</td>
+                  <td className="py-2 px-3 text-right font-mono">{formatUsd(v.avg_price)}</td>
+                  <td className={`py-2 px-3 text-right font-mono ${slippageColor(v.slippage_bps)}`}>
+                    {v.slippage_bps >= 0 ? '+' : ''}{formatNumber(v.slippage_bps, 2)} bps
+                  </td>
+                  <td className="py-2 px-3 text-right font-mono">{formatUsd(v.fees_usd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {/* Risk Metrics */}
+      <Card className="p-4">
+        <h3 className="text-sm font-medium text-terminal-text mb-4">Risk Metrics</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="bg-terminal-bg rounded p-3">
+            <p className="text-terminal-muted text-xs uppercase">Execution Risk</p>
+            <p className={`font-mono text-lg ${tca.execution_risk_score > 0.7 ? 'text-terminal-red' : tca.execution_risk_score > 0.4 ? 'text-terminal-yellow' : 'text-terminal-green'}`}>
+              {formatNumber(tca.execution_risk_score * 100, 0)}%
+            </p>
+          </div>
+          <div className="bg-terminal-bg rounded p-3">
+            <p className="text-terminal-muted text-xs uppercase">Timing Risk</p>
+            <p className="font-mono text-lg">{formatNumber(tca.timing_risk_realized_bps, 2)} bps</p>
+          </div>
+          <div className="bg-terminal-bg rounded p-3">
+            <p className="text-terminal-muted text-xs uppercase">Participation Rate</p>
+            <p className="font-mono text-lg">{formatNumber(tca.participation_rate * 100, 2)}%</p>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 export default function App() {
   const [symbol, setSymbol] = useState('AAPL');
   const [quantity, setQuantity] = useState('10000');
@@ -419,6 +671,8 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [quote, setQuote] = useState(null);
+  const [tcaResult, setTcaResult] = useState(null);
+  const [activeTab, setActiveTab] = useState('route'); // 'route' or 'tca'
 
   const handleRoute = async () => {
     setStatus('loading');
@@ -437,6 +691,28 @@ export default function App() {
       });
       setResult(response);
       setQuote(response.market_data);
+      setStatus('success');
+    } catch (err) {
+      setError(err.message);
+      setStatus('error');
+    }
+  };
+
+  const handleRunTCA = async () => {
+    setStatus('loading');
+    setError(null);
+    try {
+      const response = await runTCA({
+        symbol: symbol.toUpperCase(),
+        quantity: parseInt(quantity, 10),
+        side,
+        urgency,
+        algorithm,
+        execution_strategy: executionStrategy,
+        duration_minutes: parseInt(durationMinutes, 10),
+        smart_allocation: smartAllocation,
+      });
+      setTcaResult(response);
       setStatus('success');
     } catch (err) {
       setError(err.message);
@@ -602,14 +878,35 @@ export default function App() {
                   </label>
                 </div>
 
-                <Button onClick={handleRoute} disabled={status === 'loading'} className="w-full justify-center">
-                  {status === 'loading' ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Play className="w-4 h-4" />
-                  )}
-                  {status === 'loading' ? 'Optimizing...' : 'Route Order'}
-                </Button>
+                {/* Action Buttons */}
+                <div className="flex gap-2">
+                  <Button 
+                    onClick={() => { setActiveTab('route'); handleRoute(); }} 
+                    disabled={status === 'loading'} 
+                    className="flex-1 justify-center"
+                    variant={activeTab === 'route' ? 'primary' : 'secondary'}
+                  >
+                    {status === 'loading' && activeTab === 'route' ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Play className="w-4 h-4" />
+                    )}
+                    Route
+                  </Button>
+                  <Button 
+                    onClick={() => { setActiveTab('tca'); handleRunTCA(); }} 
+                    disabled={status === 'loading'}
+                    className="flex-1 justify-center"
+                    variant={activeTab === 'tca' ? 'primary' : 'secondary'}
+                  >
+                    {status === 'loading' && activeTab === 'tca' ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <BarChart3 className="w-4 h-4" />
+                    )}
+                    TCA
+                  </Button>
+                </div>
 
                 {error && (
                   <div className="p-3 bg-terminal-red/10 border border-terminal-red/20 rounded text-terminal-red text-sm">
@@ -655,7 +952,33 @@ export default function App() {
 
           {/* Results Panel */}
           <div className="col-span-12 lg:col-span-8">
-            {result ? (
+            {/* Tab Indicator */}
+            {(result || tcaResult) && (
+              <div className="flex gap-2 mb-4">
+                <button
+                  onClick={() => setActiveTab('route')}
+                  className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+                    activeTab === 'route' 
+                      ? 'bg-terminal-accent text-white' 
+                      : 'bg-terminal-border text-terminal-muted hover:text-terminal-text'
+                  }`}
+                >
+                  Routing Plan
+                </button>
+                <button
+                  onClick={() => setActiveTab('tca')}
+                  className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+                    activeTab === 'tca' 
+                      ? 'bg-terminal-accent text-white' 
+                      : 'bg-terminal-border text-terminal-muted hover:text-terminal-text'
+                  }`}
+                >
+                  TCA Analysis
+                </button>
+              </div>
+            )}
+
+            {activeTab === 'route' && result ? (
               <div className="space-y-6 animate-slide-up">
                 {/* Metrics Row */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -728,15 +1051,18 @@ export default function App() {
                   <AlgorithmMetrics metrics={result.algorithm_metrics} />
                 </Card>
               </div>
+            ) : activeTab === 'tca' && tcaResult ? (
+              <TCAResults tca={tcaResult} />
             ) : (
               <Card className="p-12 flex flex-col items-center justify-center text-center">
                 <div className="p-4 bg-terminal-border/30 rounded-full mb-4">
                   <GitBranch className="w-8 h-8 text-terminal-muted" />
                 </div>
-                <h3 className="text-lg font-medium text-terminal-text mb-2">No Routing Result</h3>
+                <h3 className="text-lg font-medium text-terminal-text mb-2">No Results Yet</h3>
                 <p className="text-terminal-muted text-sm max-w-md">
-                  Configure your order parameters and click "Route Order" to see the optimal
-                  routing strategy across trading venues.
+                  Configure your order parameters and click "Route" to see the optimal
+                  routing strategy, or "TCA" to run a full execution simulation with
+                  transaction cost analysis.
                 </p>
               </Card>
             )}
